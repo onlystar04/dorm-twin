@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>트윈 제어판</title>
+<style>
+  :root {
+    --bg: #1d1f23; --card: #26292f; --line: #3a3d44;
+    --text: #f1efe9; --muted: #a9a59c; --ok: #5fbf7f; --warn: #e8b84a; --bad: #e0645a; --accent: #6c9ee0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  .pill { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: #3a3d44; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+  button { background: #33373f; color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:active { transform: scale(.98); }
+  button.open { background: #4a2c2a; border-color: var(--bad); }
+  button.close { background: #24402f; border-color: var(--ok); }
+  button.small { padding: 9px 6px; font-size: 13px; font-weight: 500; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; width: 100%; margin-top: 8px; }
+  .range { display: flex; align-items: center; gap: 10px; }
+  input[type=range] { flex: 1; height: 28px; }
+  .big { font-size: 22px; font-weight: 700; min-width: 64px; text-align: right; }
+  label.f { display: block; color: var(--muted); font-size: 12px; margin-top: 8px; }
+  input[type=text], input[type=password] { width: 100%; background: #15171a; color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font-size: 14px; margin-top: 3px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted);
+    max-height: 180px; overflow-y: auto; white-space: pre-wrap; margin: 0; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>트윈 제어판</h1>
+  <div class="sub">센서 대신 MQTT 메시지를 보내서 기숙사 방 트윈을 움직여요.
+    MQTT <span id="conn" class="pill bad">연결 안 됨</span></div>
+
+  <!-- 1. 창문 -->
+  <div class="card">
+    <h2>창문 <span id="winState" class="pill">-</span></h2>
+    <div class="grid2">
+      <button class="open" id="btnOpen">창문 열기</button>
+      <button class="close" id="btnClose">창문 닫기</button>
+    </div>
+    <div class="hint">보내는 메시지: <code>{"window": 1}</code> 열림 / <code>{"window": 0}</code> 닫힘</div>
+  </div>
+
+  <!-- 2. 쓰레기통 -->
+  <div class="card">
+    <h2>쓰레기통 <span id="trashState" class="pill">-</span></h2>
+    <div class="range">
+      <input type="range" id="trash" min="0" max="100" value="30">
+      <span id="trashTxt" class="big">30%</span>
+    </div>
+    <div class="grid4">
+      <button class="small" data-level="0">비움 0</button>
+      <button class="small" data-level="30">30</button>
+      <button class="small" data-level="60">60</button>
+      <button class="small" data-level="90">90</button>
+    </div>
+    <button class="small" id="btnFill" style="width:100%;margin-top:8px">시연: 0% → 100% 천천히 차오르기</button>
+    <div class="hint">보내는 메시지: <code>{"trash": 0~100}</code> · 80% 이상이면 트윈에 "버릴 때" 알림</div>
+  </div>
+
+  <!-- 3. MQTT 설정 -->
+  <div class="card">
+    <details id="settings">
+      <summary>MQTT 연결 (트윈 페이지와 같은 ID·브로커)</summary>
+      <label class="f">내 ID (예: 학번 뒷 4자리)</label>
+      <input type="text" id="idInput" placeholder="예: 1234">
+      <label class="f">브로커</label>
+      <select id="brokerKind" style="width:100%;background:#15171a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px;font-size:14px;margin-top:3px">
+        <option value="public">공개 브로커 (broker.emqx.io, 계정 없음)</option>
+        <option value="cloud">클라우드 (EMQX Serverless, 계정 필요)</option>
+      </select>
+      <div id="cloudBox" style="display:none">
+        <label class="f">클라우드 주소</label>
+        <input type="text" id="cloudUrl" placeholder="wss://xxxx.emqxsl.com:8084/mqtt">
+        <label class="f">사용자 이름</label><input type="text" id="cloudUser">
+        <label class="f">비밀번호</label><input type="password" id="cloudPass">
+      </div>
+      <button class="primary" id="btnConnect">연결</button>
+      <div class="hint" id="topicTxt">보내는 토픽: khu/pcomp/?/sensor</div>
+    </details>
+  </div>
+
+  <!-- 4. 보낸 기록 -->
+  <div class="card">
+    <h2>보낸 메시지 기록</h2>
+    <pre id="log">아직 없음</pre>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+<script>
+/* ===============================
+   1. 브로커·토픽 규칙 (교수님 7주차 예제와 같음 — 트윈·ESP32와 같아야 함)
+   토픽    khu/pcomp/{내 ID}/sensor
+   메시지  {"window": 1, "trash": 85, "t": 보낸 시각(ms)}  · 빠진 키는 트윈에서 이전 값 유지
+   =============================== */
+const PUBLIC_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const 토픽 = (id) => `khu/pcomp/${id}/sensor`;
+
+const $ = (id) => document.getElementById(id);
+const load = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+// 주소에 ?id=1234 가 붙어 있으면 그 ID를 바로 씀 (QR코드로 폰에서 열 때 편함)
+const urlId = new URLSearchParams(location.search).get('id');
+if (urlId) save('khu_pcomp_id', urlId.trim());
+$('idInput').value = load('khu_pcomp_id');
+$('brokerKind').value = load('twin_broker') || 'public';
+$('cloudUrl').value = load('twin_cloudUrl');
+$('cloudUser').value = load('twin_cloudUser');
+const showCloud = () => { $('cloudBox').style.display = $('brokerKind').value === 'cloud' ? 'block' : 'none'; };
+showCloud(); $('brokerKind').onchange = showCloud;
+if (!$('idInput').value) $('settings').open = true;   // 처음이면 설정 칸을 펼쳐둠
+
+/* ===============================
+   2. MQTT 연결
+   =============================== */
+let client = null, myId = '';
+
+function setConn(text, cls) { $('conn').textContent = text; $('conn').className = 'pill ' + cls; }
+
+function connect() {
+  myId = $('idInput').value.trim();
+  if (!myId) { setConn('ID 필요', 'warn'); $('settings').open = true; return; }
+  const cloud = $('brokerKind').value === 'cloud';
+  const url = cloud ? $('cloudUrl').value.trim() : PUBLIC_BROKER;
+  save('khu_pcomp_id', myId); save('twin_broker', $('brokerKind').value);
+  save('twin_cloudUrl', $('cloudUrl').value); save('twin_cloudUser', $('cloudUser').value);
+  $('topicTxt').textContent = '보내는 토픽: ' + 토픽(myId);
+  if (client) client.end(true);
+
+  const opts = { clientId: 'control-' + myId + '-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 2000, connectTimeout: 8000 };
+  if (cloud) { opts.username = $('cloudUser').value.trim(); opts.password = $('cloudPass').value; }
+  client = mqtt.connect(url, opts);
+  setConn('연결 중…', 'warn');
+
+  client.on('connect', () => {
+    setConn('연결됨 (' + (cloud ? '클라우드' : '공개') + ')', 'ok');
+    $('settings').open = false;
+    client.subscribe(토픽(myId));   // 내가 보낸 값이 브로커를 돌아오는지 확인
+  });
+  client.on('reconnect', () => setConn('다시 연결 중…', 'warn'));
+  client.on('close', () => setConn('연결 끊김', 'bad'));
+  client.on('error', (e) => setConn('오류: ' + e.message, 'bad'));
+
+  // 브로커에서 돌아온 값으로 현재 상태 표시
+  client.on('message', (topic, payload) => {
+    let d; try { d = JSON.parse(payload.toString()); } catch (e) { return; }
+    if ('window' in d) showWindow(Number(d.window) === 1);
+    if ('trash' in d) showTrash(Number(d.trash));
+  });
+}
+
+/* ===============================
+   3. 메시지 보내기
+   =============================== */
+function send(data) {
+  if (!client || !client.connected) { setConn('먼저 연결하세요', 'warn'); $('settings').open = true; return; }
+  const msg = JSON.stringify({ ...data, t: Date.now() });
+  client.publish(토픽(myId), msg);
+  addLog(msg);
+}
+
+function addLog(line) {
+  const t = new Date().toLocaleTimeString('ko-KR');
+  const log = $('log');
+  if (log.textContent === '아직 없음') log.textContent = '';
+  log.textContent = `[${t}] ${line}\n` + log.textContent;
+}
+
+function showWindow(open) {
+  $('winState').textContent = open ? '열림' : '닫힘';
+  $('winState').className = 'pill ' + (open ? 'bad' : 'ok');
+}
+function showTrash(level) {
+  $('trashState').textContent = level + '%';
+  $('trashState').className = 'pill ' + (level >= 80 ? 'bad' : level >= 50 ? 'warn' : 'ok');
+}
+
+/* ===============================
+   4. 버튼 연결
+   =============================== */
+$('btnConnect').onclick = connect;
+$('btnOpen').onclick = () => send({ window: 1 });
+$('btnClose').onclick = () => send({ window: 0 });
+
+$('trash').oninput = (e) => { $('trashTxt').textContent = e.target.value + '%'; };
+$('trash').onchange = (e) => send({ trash: Number(e.target.value) });
+
+document.querySelectorAll('[data-level]').forEach((b) => {
+  b.onclick = () => {
+    const v = Number(b.dataset.level);
+    $('trash').value = v; $('trashTxt').textContent = v + '%';
+    send({ trash: v });
+  };
+});
+
+// 시연용: 1초마다 10%씩 차오르게 보내기 (실제 센서 대신 "쓰레기가 차는 모습")
+let fillTimer = null;
+$('btnFill').onclick = () => {
+  if (fillTimer) { clearInterval(fillTimer); fillTimer = null; $('btnFill').textContent = '시연: 0% → 100% 천천히 차오르기'; return; }
+  let v = 0;
+  $('btnFill').textContent = '멈추기';
+  fillTimer = setInterval(() => {
+    $('trash').value = v; $('trashTxt').textContent = v + '%';
+    send({ trash: v });
+    v += 10;
+    if (v > 100) { clearInterval(fillTimer); fillTimer = null; $('btnFill').textContent = '시연: 0% → 100% 천천히 차오르기'; }
+  }, 1000);
+};
+
+if ($('idInput').value) connect();
+</script>
+</body>
+</html>

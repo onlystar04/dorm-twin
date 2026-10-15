@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기숙사 방 트윈</title>
+<style>
+  :root {
+    --bg: #1d1f23; --panel: rgba(28,30,35,.92); --line: #3a3d44;
+    --text: #f1efe9; --muted: #a9a59c; --ok: #5fbf7f; --warn: #e8b84a; --bad: #e0645a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+  #scene { position: fixed; inset: 0; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+
+  #alert { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 3;
+    padding: 10px 16px; border-radius: 10px; background: var(--bad); color: #fff; font-weight: 700;
+    font-size: 15px; display: none; max-width: calc(100% - 24px); text-align: center; }
+
+  #panel { position: fixed; top: 12px; right: 12px; width: 300px; z-index: 2;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  #panel h1 { margin: 0 0 2px; font-size: 16px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0;
+    border-top: 1px solid var(--line); font-size: 14px; }
+  .val { font-weight: 700; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12px; }
+  .switch { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  details { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+  .ctl { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; align-items: center; }
+  button { background: #2c3038; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: #6b707a; }
+  input[type=text], input[type=password] { width: 100%; background: #15171a; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 3px 0; }
+  input[type=range] { flex: 1; }
+  label.f { display: block; color: var(--muted); font-size: 11px; margin-top: 6px; }
+
+  @media (max-width: 640px) {
+    #panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; border-radius: 14px 14px 0 0;
+      max-height: 42vh; overflow-y: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="loading">방 모델 불러오는 중…</div>
+<div id="alert"></div>
+
+<div id="panel">
+  <h1>내 기숙사 방</h1>
+  <div class="sub">MQTT <span id="conn" class="bad">연결 안 됨</span></div>
+
+  <div class="row"><span>장기 외출 모드</span>
+    <label class="switch"><input type="checkbox" id="away"> <span id="awayTxt" class="hint">꺼짐</span></label>
+  </div>
+  <div class="row"><span>창문</span><span id="winTxt" class="val">-</span></div>
+  <div class="row"><span>쓰레기통</span><span id="trashTxt" class="val">-</span></div>
+  <div class="row"><span>앞쪽 벽 반투명</span>
+    <label class="switch"><input type="checkbox" id="frontWallChk" checked> <span class="hint">방 안 보기</span></label>
+  </div>
+  <div class="row"><span class="hint">마지막 업데이트</span><span id="updated" class="hint">-</span></div>
+  <div class="row"><span class="hint">지연 (보낸 시각 → 받은 시각)</span><span id="latency" class="hint">- ms</span></div>
+
+  <details>
+    <summary>테스트 제어 (센서 대신 직접 보내기)</summary>
+    <div class="ctl">
+      <button id="btnOpen">창문 열기</button>
+      <button id="btnClose">창문 닫기</button>
+    </div>
+    <div class="ctl">
+      <span class="hint">쓰레기</span>
+      <input type="range" id="trashRange" min="0" max="100" value="30">
+      <span id="trashRangeTxt" class="hint">30%</span>
+    </div>
+    <div class="hint">MQTT가 연결돼 있으면 같은 토픽으로 보내고, 아니면 화면만 바뀌어요.</div>
+  </details>
+
+  <details id="settings">
+    <summary>MQTT 연결 (교수님 예제와 같은 규칙)</summary>
+    <label class="f">내 ID (제어판·ESP32와 같게, 예: 학번 뒷 4자리)</label>
+    <input type="text" id="idInput" placeholder="예: 1234">
+    <label class="f">브로커</label>
+    <select id="brokerKind" style="width:100%;background:#15171a;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px">
+      <option value="public">공개 브로커 (broker.emqx.io, 계정 없음)</option>
+      <option value="cloud">클라우드 (EMQX Serverless, 계정 필요)</option>
+    </select>
+    <div id="cloudBox" style="display:none">
+      <label class="f">클라우드 주소 (wss://…:8084/mqtt)</label>
+      <input type="text" id="cloudUrl" placeholder="wss://xxxx.emqxsl.com:8084/mqtt">
+      <label class="f">사용자 이름</label><input type="text" id="cloudUser">
+      <label class="f">비밀번호</label><input type="password" id="cloudPass">
+    </div>
+    <div class="ctl"><button id="btnConnect">연결</button>
+      <span class="hint" id="topicTxt">구독 토픽: khu/pcomp/?/sensor</span></div>
+  </details>
+</div>
+
+<!-- 라이브러리: three.js(3D), mqtt.js(MQTT) -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ===============================
+   1. 설정값 (위치·기준값은 여기서만 바꾸면 됨)
+   =============================== */
+const ROOM_FILE = 'room.glb';
+
+// 방 크기 (모델 좌표): 바닥 y=-0.475, 천장 y=0.475
+const ROOM = { floorY: -0.475, ceilY: 0.49, frontZ: 0.95, leftX: -0.95 };   // 천장을 살짝 높여 원래 벽 윗면도 가림
+
+// 오른쪽 벽: 모델의 원래 벽(높이·색이 안 맞음)을 안쪽에서 통째로 덮음 (창문 없음)
+const RIGHT_WALL = { inX: 0.855, thick: 0.12, fromZ: -1.0, toZ: 1.03 };
+
+// 앞벽(정면 벽): inZ = 방 안쪽 면 위치
+const FRONT_WALL = { inZ: 0.84, thick: 0.14, fromX: -1.0, toX: 0.98 };   // 원래 모델의 낮은 앞벽·기둥까지 덮도록 안쪽으로
+
+// 창문: 앞벽에 뚫린 구멍에 끼움. 실제 창문 위치에 맞게 x, y를 바꾸면 됨 (오른쪽 +, 왼쪽 -)
+const WINDOW = { x: 0.0, y: 0.10, paneW: 0.30, paneH: 0.36 };
+
+// 쓰레기통: 책상 옆 회색 통 위치 (모델 좌표)
+const TRASH = { x: -0.61, z: 0.42, floorY: -0.475, radius: 0.06, height: 0.14 };
+
+const TRASH_FULL = 80;        // 이 % 이상이면 "가득 참"
+const TRASH_HALF = 50;        // 이 % 이상이면 "절반 넘음"
+
+/* ===============================
+   2. 3D 장면 만들기
+   =============================== */
+const box = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+box.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d1f23);
+scene.add(new THREE.AmbientLight(0xffffff, 2.2));
+const sun = new THREE.DirectionalLight(0xfff2dd, 1.2);
+sun.position.set(1, 2, 2);
+scene.add(sun);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 50);
+camera.position.set(2.6, 1.1, -0.2);   // 오른쪽 벽(+x) 쪽에서 방을 바라봄
+
+// 반투명 벽 쪽에서만 보도록 회전 범위를 제한
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -0.1, 0);
+controls.enableDamping = true;
+controls.minDistance = 1.2;
+controls.maxDistance = 4;
+controls.minAzimuthAngle = Math.PI / 2 - Math.PI / 3;   // 오른쪽 벽 방향 기준 ±60도까지만 회전
+controls.maxAzimuthAngle = Math.PI / 2 + Math.PI / 3;
+controls.maxPolarAngle = Math.PI / 2.1;
+
+// 방 모델 불러오기 (한 덩어리라서 움직이지 않는 배경으로 씀)
+// 모델의 원래 오른쪽 벽과 낮은 앞벽은 잘라내서 안 보이게 함 (새로 세운 벽이 대신함)
+renderer.localClippingEnabled = true;
+const cutPlanes = [
+  new THREE.Plane(new THREE.Vector3(-1, 0, 0), RIGHT_WALL.inX),  // x > 오른쪽 벽 안쪽 면은 잘라냄
+  new THREE.Plane(new THREE.Vector3(0, 0, -1), FRONT_WALL.inZ),  // z > 앞벽 안쪽 면은 잘라냄
+];
+new GLTFLoader().load(ROOM_FILE, (gltf) => {
+  gltf.scene.traverse((o) => { if (o.isMesh) o.material.clippingPlanes = cutPlanes; });
+  scene.add(gltf.scene);
+  document.getElementById('loading').remove();
+}, undefined, () => {
+  document.getElementById('loading').textContent = 'room.glb를 못 불러왔어요. index.html과 같은 폴더에 있는지 확인하세요.';
+});
+
+/* --- 벽 세우기 (상자 여러 개로 벽을 만들고, 창문 자리는 비워둠) --- */
+const wallInMat = new THREE.MeshStandardMaterial({ color: 0xf3ddc6 });   // 방 안쪽 벽 색
+const wallOutMat = new THREE.MeshStandardMaterial({ color: 0x8a817a });  // 바깥쪽 벽 색
+const wallTopMat = new THREE.MeshStandardMaterial({ color: 0x5a524c });  // 벽 윗면(단면) 색
+
+// 상자 하나 = 벽 조각 하나. 면 순서: +x, -x, +y(윗면), -y, +z, -z
+function wallBox(x1, x2, y1, y2, z1, z2, mats) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(x2 - x1, y2 - y1, z2 - z1), mats);
+  m.position.set((x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2);
+  scene.add(m);
+  return m;
+}
+
+// 오른쪽 벽: 구멍 없이 통째로. 카메라 쪽 벽이라 반투명 전환용으로 재질을 따로 복사함
+const rightMats = [wallOutMat, wallInMat, wallTopMat, wallTopMat, wallTopMat, wallTopMat].map((m) => m.clone());
+wallBox(RIGHT_WALL.inX, RIGHT_WALL.inX + RIGHT_WALL.thick, ROOM.floorY, ROOM.ceilY,
+  RIGHT_WALL.fromZ, RIGHT_WALL.toZ, rightMats);
+
+// 앞벽: 창문 구멍 둘레를 4조각(아래·위·왼쪽·오른쪽)으로 만듦
+// 면 순서: +x, -x, +y, -y, +z(바깥), -z(방 안)
+const frontMats = [wallTopMat, wallTopMat, wallTopMat, wallTopMat, wallOutMat, wallInMat];
+const frontWall = new THREE.Group();
+{
+  const z1 = FRONT_WALL.inZ, z2 = FRONT_WALL.inZ + FRONT_WALL.thick;
+  const X1 = FRONT_WALL.fromX, X2 = FRONT_WALL.toX;
+  const hx1 = WINDOW.x - WINDOW.paneW, hx2 = WINDOW.x + WINDOW.paneW;          // 구멍 좌우
+  const hy1 = WINDOW.y - WINDOW.paneH / 2, hy2 = WINDOW.y + WINDOW.paneH / 2;  // 구멍 위아래
+  const F = ROOM.floorY, C = ROOM.ceilY;
+  frontWall.add(
+    wallBox(X1, X2, F, hy1, z1, z2, frontMats),     // 창문 아래
+    wallBox(X1, X2, hy2, C, z1, z2, frontMats),     // 창문 위
+    wallBox(X1, hx1, hy1, hy2, z1, z2, frontMats),  // 창문 왼쪽
+    wallBox(hx2, X2, hy1, hy2, z1, z2, frontMats)); // 창문 오른쪽
+}
+scene.add(frontWall);
+
+// 체크하면 카메라 쪽 벽(오른쪽 벽)이 반투명해져서 방 안이 보임
+function setNearWallSeeThrough(on) {
+  rightMats.forEach((m, i) => {
+    m.transparent = on;
+    m.opacity = on ? (i <= 1 ? 0.22 : 0.06) : 1;   // 안·바깥 면은 살짝, 윗면·옆면은 거의 투명하게
+    m.depthWrite = !on;
+    m.needsUpdate = true;
+  });
+}
+setNearWallSeeThrough(true);   // 처음엔 반투명 (방 안이 보이게)
+
+/* --- 창문: 바깥 하늘 + 고정 창짝 + 움직이는 창짝 --- */
+const windowGroup = new THREE.Group();
+windowGroup.position.set(WINDOW.x, WINDOW.y, FRONT_WALL.inZ);
+windowGroup.rotation.y = Math.PI;   // 앞벽을 따라 세우기 (방 안쪽을 바라봄)
+scene.add(windowGroup);
+
+const W = WINDOW.paneW * 2, H = WINDOW.paneH;
+const sky = new THREE.Mesh(new THREE.PlaneGeometry(W, H),
+  new THREE.MeshBasicMaterial({ color: 0x9cc7e8 }));
+sky.position.z = -FRONT_WALL.thick / 2;   // 벽 두께 가운데에 하늘을 둠
+windowGroup.add(sky);
+
+const frameMat = new THREE.MeshStandardMaterial({ color: 0xf4f1ea });  // 열리면 빨간색으로 바뀜
+const frame = new THREE.Group();
+[[0, H / 2, W + 0.03, 0.02], [0, -H / 2, W + 0.03, 0.02],
+ [-W / 2, 0, 0.02, H], [W / 2, 0, 0.02, H]].forEach(([x, y, w, h]) => {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.02), frameMat);
+  m.position.set(x, y, 0.004);
+  frame.add(m);
+});
+windowGroup.add(frame);
+
+function makePane() {
+  const g = new THREE.Group();
+  // 유리: 하얗게 반사되는 느낌으로 조금 불투명하게 (열린 틈은 파란 하늘이 보임)
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(WINDOW.paneW - 0.02, H - 0.02),
+    new THREE.MeshBasicMaterial({ color: 0xeef4f8, transparent: true, opacity: 0.75, side: THREE.DoubleSide }));
+  g.add(glass);
+  // 창짝 테두리 4개
+  [[0, H / 2 - 0.008, WINDOW.paneW, 0.016], [0, -H / 2 + 0.008, WINDOW.paneW, 0.016],
+   [-WINDOW.paneW / 2 + 0.008, 0, 0.016, H], [WINDOW.paneW / 2 - 0.008, 0, 0.016, H]].forEach(([x, y, w, h]) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.01), frameMat);
+    m.position.set(x, y, 0.004);
+    g.add(m);
+  });
+  return g;
+}
+const fixedPane = makePane();   // 오른쪽 고정 창짝
+fixedPane.position.set(WINDOW.paneW / 2, 0, 0.006);
+const movingPane = makePane();  // 왼쪽 → 열면 오른쪽으로 미끄러짐
+const CLOSED_X = -WINDOW.paneW / 2, OPEN_X = WINDOW.paneW / 2;
+movingPane.position.set(CLOSED_X, 0, 0.014);
+windowGroup.add(fixedPane, movingPane);
+
+/* --- 쓰레기통 높이 표시 (반투명 통 + 차오르는 기둥) --- */
+const trashGroup = new THREE.Group();
+trashGroup.position.set(TRASH.x, TRASH.floorY, TRASH.z);
+scene.add(trashGroup);
+
+const shell = new THREE.Mesh(new THREE.CylinderGeometry(TRASH.radius, TRASH.radius, TRASH.height, 32, 1, true),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, side: THREE.DoubleSide }));
+shell.position.y = TRASH.height / 2;
+trashGroup.add(shell);
+
+const fillMat = new THREE.MeshBasicMaterial({ color: 0x5fbf7f, transparent: true, opacity: 0.85 });
+const fill = new THREE.Mesh(new THREE.CylinderGeometry(TRASH.radius * 0.9, TRASH.radius * 0.9, 1, 32), fillMat);
+trashGroup.add(fill);
+
+// 가려져도 보이도록 항상 위에 그리는 표시
+[shell, fill].forEach((m) => { m.material.depthTest = false; m.renderOrder = 10; });
+
+/* --- 3D 위 말풍선 라벨 (가구에 가려도 항상 보임) --- */
+function makeLabel() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 96;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  sprite.renderOrder = 20;
+  sprite.scale.set(0.32, 0.12, 1);
+  sprite.setText = (text, color) => {
+    const c = canvas.getContext('2d');
+    c.clearRect(0, 0, 256, 96);
+    c.fillStyle = color;
+    c.beginPath(); c.roundRect(4, 4, 248, 64, 18); c.fill();
+    c.beginPath(); c.moveTo(112, 66); c.lineTo(128, 90); c.lineTo(144, 66); c.fill();
+    c.fillStyle = '#fff';
+    c.font = 'bold 34px sans-serif';
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, 128, 37);
+    tex.needsUpdate = true;
+  };
+  scene.add(sprite);
+  return sprite;
+}
+const windowLabel = makeLabel();
+windowLabel.position.set(WINDOW.x, WINDOW.y + WINDOW.paneH / 2 + 0.1, FRONT_WALL.inZ - 0.03);
+const trashLabel = makeLabel();
+trashLabel.position.set(TRASH.x, TRASH.floorY + TRASH.height + 0.1, TRASH.z);
+
+/* ===============================
+   3. 상태와 화면 갱신
+   =============================== */
+const state = { windowOpen: false, openedAt: null, trash: 30, updated: null, away: false };
+let targetPaneX = CLOSED_X;
+
+function trashColor(p) {
+  if (p >= TRASH_FULL) return 0xe0645a;
+  if (p >= TRASH_HALF) return 0xe8b84a;
+  return 0x5fbf7f;
+}
+
+function render3D() {
+  targetPaneX = state.windowOpen ? OPEN_X : CLOSED_X;
+  const h = Math.max(0.002, TRASH.height * state.trash / 100);
+  fill.scale.y = h;
+  fill.position.y = h / 2;
+  fillMat.color.setHex(trashColor(state.trash));
+
+  frameMat.color.setHex(state.windowOpen ? 0xe0645a : 0xf4f1ea);
+  windowLabel.setText(state.windowOpen ? '창문 열림' : '창문 닫힘', state.windowOpen ? '#e0645a' : '#3f8f5c');
+  const hex = '#' + trashColor(state.trash).toString(16).padStart(6, '0');
+  trashLabel.setText('쓰레기 ' + state.trash + '%', hex);
+}
+
+function minutesSince(t) { return t ? Math.floor((Date.now() - t) / 60000) : 0; }
+
+function renderPanel() {
+  const winTxt = document.getElementById('winTxt');
+  if (state.windowOpen) {
+    winTxt.textContent = `열림 · ${minutesSince(state.openedAt)}분째`;
+    winTxt.className = 'val bad';
+  } else {
+    winTxt.textContent = '닫힘';
+    winTxt.className = 'val ok';
+  }
+
+  const trashTxt = document.getElementById('trashTxt');
+  trashTxt.textContent = `${state.trash}%` + (state.trash >= TRASH_FULL ? ' · 버릴 때!' : '');
+  trashTxt.className = 'val ' + (state.trash >= TRASH_FULL ? 'bad' : state.trash >= TRASH_HALF ? 'warn' : 'ok');
+
+  document.getElementById('updated').textContent =
+    state.updated ? new Date(state.updated).toLocaleTimeString('ko-KR') : '-';
+  document.getElementById('awayTxt').textContent = state.away ? '켜짐' : '꺼짐';
+
+  // 알림: 외출 모드인데 창문이 열려 있거나, 쓰레기가 가득 찼을 때
+  const msgs = [];
+  if (state.away && state.windowOpen) msgs.push('창문이 열려 있어요');
+  if (state.trash >= TRASH_FULL) msgs.push('쓰레기 버릴 때예요');
+  const alertBox = document.getElementById('alert');
+  alertBox.textContent = msgs.join(' · ');
+  alertBox.style.display = msgs.length ? 'block' : 'none';
+}
+
+function update() { render3D(); renderPanel(); }
+
+// 센서(또는 테스트 버튼)에서 값이 들어오면 여기로
+function onWindow(open) {
+  if (open && !state.windowOpen) state.openedAt = Date.now();
+  state.windowOpen = open;
+  state.updated = Date.now();
+  update();
+}
+function onTrash(level) {
+  state.trash = Math.max(0, Math.min(100, Math.round(level)));
+  state.updated = Date.now();
+  update();
+}
+
+/* ===============================
+   4. MQTT (교수님 7주차 예제와 같은 규칙)
+   토픽    khu/pcomp/{내 ID}/sensor
+   메시지  {"window": 1, "trash": 85, "t": 1690000000000}
+           window = 창문 (1 열림 / 0 닫힘) · trash = 쓰레기 높이(%) · t = 보낸 시각(ms, 지연 계산용)
+           빠진 키는 이전 값 유지 → 창문만 보내도, 쓰레기만 보내도 됨
+   =============================== */
+const PUBLIC_BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const 토픽 = (id) => `khu/pcomp/${id}/sensor`;
+
+let client = null, myId = '';
+const $ = (id) => document.getElementById(id);
+const load = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const save = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+
+// 설정은 이 브라우저에만 저장 (ID 저장 이름은 교수님 예제와 같음 → 같은 사이트의 예제 페이지와 공유)
+// 주소에 ?id=1234 가 붙어 있으면 그 ID를 바로 씀 (QR코드로 폰에서 열 때 편함)
+const urlId = new URLSearchParams(location.search).get('id');
+if (urlId) save('khu_pcomp_id', urlId.trim());
+$('idInput').value = load('khu_pcomp_id');
+$('brokerKind').value = load('twin_broker') || 'public';
+$('cloudUrl').value = load('twin_cloudUrl');
+$('cloudUser').value = load('twin_cloudUser');
+$('cloudBox').style.display = $('brokerKind').value === 'cloud' ? 'block' : 'none';
+$('brokerKind').onchange = () => { $('cloudBox').style.display = $('brokerKind').value === 'cloud' ? 'block' : 'none'; };
+
+function setConn(text, cls) { $('conn').textContent = text; $('conn').className = cls; }
+
+function connect() {
+  myId = $('idInput').value.trim();
+  if (!myId) { setConn('ID를 넣어주세요', 'warn'); $('settings').open = true; return; }
+  const cloud = $('brokerKind').value === 'cloud';
+  const url = cloud ? $('cloudUrl').value.trim() : PUBLIC_BROKER;
+  save('khu_pcomp_id', myId); save('twin_broker', $('brokerKind').value);
+  save('twin_cloudUrl', $('cloudUrl').value); save('twin_cloudUser', $('cloudUser').value);
+  $('topicTxt').textContent = '구독 토픽: ' + 토픽(myId);
+  if (client) client.end(true);
+
+  const opts = { clientId: 'twin-' + myId + '-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 2000, connectTimeout: 8000 };
+  if (cloud) { opts.username = $('cloudUser').value.trim(); opts.password = $('cloudPass').value; }  // 클라우드는 계정 필요
+  client = mqtt.connect(url, opts);
+  setConn('연결 중…', 'warn');
+
+  client.on('connect', () => {
+    setConn('연결됨 (' + (cloud ? '클라우드' : '공개') + ')', 'ok');
+    client.subscribe(토픽(myId));
+  });
+  client.on('reconnect', () => setConn('다시 연결 중…', 'warn'));
+  client.on('close', () => setConn('연결 끊김', 'bad'));
+  client.on('error', (e) => setConn('오류: ' + e.message, 'bad'));
+
+  client.on('message', (topic, payload) => {
+    let d;
+    try { d = JSON.parse(payload.toString()); } catch (e) { return; }
+    if ('window' in d) onWindow(Number(d.window) === 1 || d.window === true);
+    if ('trash' in d) onTrash(Number(d.trash));
+    if (d.t) $('latency').textContent = (Date.now() - d.t) + ' ms';
+  });
+}
+
+// 테스트 버튼: 연결돼 있으면 MQTT로 보내서 왕복 확인, 아니면 화면만 변경
+function send(data) {
+  if (client && client.connected) client.publish(토픽(myId), JSON.stringify({ ...data, t: Date.now() }));
+  else { if ('window' in data) onWindow(data.window === 1); if ('trash' in data) onTrash(data.trash); }
+}
+
+$('btnConnect').onclick = connect;
+$('btnOpen').onclick = () => send({ window: 1 });
+$('btnClose').onclick = () => send({ window: 0 });
+$('trashRange').oninput = (e) => { $('trashRangeTxt').textContent = e.target.value + '%'; };
+$('trashRange').onchange = (e) => send({ trash: Number(e.target.value) });
+$('frontWallChk').onchange = (e) => setNearWallSeeThrough(e.target.checked);
+$('away').onchange = (e) => { state.away = e.target.checked; renderPanel(); };
+
+if ($('idInput').value) connect();
+update();
+setInterval(renderPanel, 30000);   // "n분째" 숫자 갱신
+
+/* ===============================
+   5. 매 프레임 그리기 (창짝은 부드럽게 미끄러짐)
+   =============================== */
+function loop() {
+  movingPane.position.x += (targetPaneX - movingPane.position.x) * 0.15;
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+loop();
+
+// 화면 크기에 맞추기: 세로 화면(폰)이면 카메라를 멀리 두고, 아래 패널을 피해 방을 위쪽에 보여줌
+function fit() {
+  const w = innerWidth, h = innerHeight, aspect = w / h;
+  camera.aspect = aspect;
+  const far = aspect < 1 ? 1.0 / aspect : 1.12;
+  camera.position.setLength(2.85 * far);
+  controls.maxDistance = 4 * far;
+  if (w <= 640) camera.setViewOffset(w, h, 0, h * 0.2, w, h);      // 폰: 방을 위로
+  else camera.setViewOffset(w, h, Math.min(120, w * 0.07), 0, w, h); // PC: 오른쪽 패널을 피해 왼쪽으로
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+addEventListener('resize', fit);
+fit();
+
+// 확인용 (콘솔에서 직접 테스트할 때)
+window.twin = { onWindow, onTrash, state, camera, controls };
+</script>
+</body>
+</html>
