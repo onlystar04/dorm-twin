@@ -129,7 +129,8 @@ const RIGHT_WALL = { inX: 0.855, thick: 0.12, fromZ: -1.0, toZ: 1.03 };
 const FRONT_WALL = { inZ: 0.84, thick: 0.14, fromX: -1.0, toX: 0.98 };   // 원래 모델의 낮은 앞벽·기둥까지 덮도록 안쪽으로
 
 // 창문: 앞벽에 뚫린 구멍에 끼움. 실제 창문 위치에 맞게 x, y를 바꾸면 됨 (오른쪽 +, 왼쪽 -)
-const WINDOW = { x: 0.0, y: 0.10, paneW: 0.30, paneH: 0.36 };
+// paneW = 창 폭의 절반, paneH = 창 전체 높이
+const WINDOW = { x: 0.0, y: 0.08, paneW: 0.16, paneH: 0.46 };   // 실제 창이 세로로 긴 오르내리창이라 폭은 좁고 높이는 길게
 
 // 쓰레기통: 책상 옆 회색 통 위치 (모델 좌표)
 const TRASH = { x: -0.61, z: 0.42, floorY: -0.475, radius: 0.06, height: 0.14 };
@@ -251,26 +252,28 @@ const frame = new THREE.Group();
 });
 windowGroup.add(frame);
 
+// 오르내리창: 위아래 두 짝. 아래 짝이 위로 올라가며 열림 (실제 기숙사 창과 같음)
+const PW = W, PH = H / 2;   // 창짝 하나의 폭·높이
 function makePane() {
   const g = new THREE.Group();
   // 유리: 하얗게 반사되는 느낌으로 조금 불투명하게 (열린 틈은 파란 하늘이 보임)
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(WINDOW.paneW - 0.02, H - 0.02),
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(PW - 0.02, PH - 0.02),
     new THREE.MeshBasicMaterial({ color: 0xeef4f8, transparent: true, opacity: 0.75, side: THREE.DoubleSide }));
   g.add(glass);
   // 창짝 테두리 4개
-  [[0, H / 2 - 0.008, WINDOW.paneW, 0.016], [0, -H / 2 + 0.008, WINDOW.paneW, 0.016],
-   [-WINDOW.paneW / 2 + 0.008, 0, 0.016, H], [WINDOW.paneW / 2 - 0.008, 0, 0.016, H]].forEach(([x, y, w, h]) => {
+  [[0, PH / 2 - 0.008, PW, 0.016], [0, -PH / 2 + 0.008, PW, 0.016],
+   [-PW / 2 + 0.008, 0, 0.016, PH], [PW / 2 - 0.008, 0, 0.016, PH]].forEach(([x, y, w, h]) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.01), frameMat);
     m.position.set(x, y, 0.004);
     g.add(m);
   });
   return g;
 }
-const fixedPane = makePane();   // 오른쪽 고정 창짝
-fixedPane.position.set(WINDOW.paneW / 2, 0, 0.006);
-const movingPane = makePane();  // 왼쪽 → 열면 오른쪽으로 미끄러짐
-const CLOSED_X = -WINDOW.paneW / 2, OPEN_X = WINDOW.paneW / 2;
-movingPane.position.set(CLOSED_X, 0, 0.014);
+const fixedPane = makePane();   // 위쪽 고정 창짝
+fixedPane.position.set(0, PH / 2, 0.006);
+const movingPane = makePane();  // 아래쪽 창짝 → 열면 위로 올라감
+const CLOSED_Y = -PH / 2, OPEN_Y = PH / 2;
+movingPane.position.set(0, CLOSED_Y, 0.014);
 windowGroup.add(fixedPane, movingPane);
 
 /* --- 쓰레기통 높이 표시 (반투명 통 + 차오르는 기둥) --- */
@@ -323,7 +326,7 @@ trashLabel.position.set(TRASH.x, TRASH.floorY + TRASH.height + 0.1, TRASH.z);
    3. 상태와 화면 갱신
    =============================== */
 const state = { windowOpen: false, openedAt: null, trash: 30, updated: null, away: false };
-let targetPaneX = CLOSED_X;
+let targetPaneY = CLOSED_Y;
 
 function trashColor(p) {
   if (p >= TRASH_FULL) return 0xe0645a;
@@ -332,7 +335,7 @@ function trashColor(p) {
 }
 
 function render3D() {
-  targetPaneX = state.windowOpen ? OPEN_X : CLOSED_X;
+  targetPaneY = state.windowOpen ? OPEN_Y : CLOSED_Y;
   const h = Math.max(0.002, TRASH.height * state.trash / 100);
   fill.scale.y = h;
   fill.position.y = h / 2;
@@ -470,7 +473,7 @@ setInterval(renderPanel, 30000);   // "n분째" 숫자 갱신
    5. 매 프레임 그리기 (창짝은 부드럽게 미끄러짐)
    =============================== */
 function loop() {
-  movingPane.position.x += (targetPaneX - movingPane.position.x) * 0.15;
+  movingPane.position.y += (targetPaneY - movingPane.position.y) * 0.15;
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
